@@ -1,0 +1,581 @@
+{% extends "base.html" %}
+
+{% block title %}Flask PRP Generator - Transform Ideas into PRPs{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto">
+        <!-- Hero Section -->
+        <div class="text-center mb-5">
+            <h1 class="display-4 text-primary mb-3">Flask PRP Generator</h1>
+            <p class="lead">
+                Transform your business ideas into comprehensive Product Requirement Prompts (PRPs) 
+                that AI agents can execute successfully on the first pass.
+            </p>
+        </div>
+
+        <!-- Business Concept Form -->
+        <div class="card shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h3 class="card-title mb-0">
+                    <i class="bi bi-lightbulb"></i> Describe Your Business Idea
+                </h3>
+            </div>
+            <div class="card-body">
+                <form id="conceptForm">
+                    <div class="mb-3">
+                        <label for="title" class="form-label">Business Idea Title *</label>
+                        <input type="text" class="form-control" id="title" name="title" 
+                               placeholder="e.g., AI-Powered Restaurant Management System" 
+                               required minlength="5" maxlength="200">
+                        <div class="form-text">Give your idea a clear, concise title (5-200 characters)</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Detailed Description *</label>
+                        <textarea class="form-control" id="description" name="description" rows="4" 
+                                  placeholder="Describe your business idea in detail. What problem does it solve? Who are the users? What features do you envision?"
+                                  required minlength="20" maxlength="2000"></textarea>
+                        <div class="form-text">
+                            Provide a detailed description (20-2000 characters). The more detail, the better the generated PRP.
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="domain" class="form-label">Business Domain</label>
+                            <select class="form-select" id="domain" name="domain">
+                                <option value="">Select domain...</option>
+                                <option value="saas">SaaS (Software as a Service)</option>
+                                <option value="e_commerce">E-commerce</option>
+                                <option value="mobile_app">Mobile App</option>
+                                <option value="marketplace">Marketplace</option>
+                                <option value="fintech">FinTech</option>
+                                <option value="healthcare">Healthcare</option>
+                                <option value="education">Education</option>
+                                <option value="productivity">Productivity</option>
+                                <option value="social">Social</option>
+                                <option value="gaming">Gaming</option>
+                                <option value="iot">IoT</option>
+                                <option value="blockchain">Blockchain</option>
+                                <option value="ai_ml">AI/ML</option>
+                                <option value="content">Content</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-6 mb-3">
+                            <label for="business_model" class="form-label">Business Model</label>
+                            <select class="form-select" id="business_model" name="business_model">
+                                <option value="">Select model...</option>
+                                <option value="freemium">Freemium</option>
+                                <option value="subscription">Subscription</option>
+                                <option value="marketplace">Marketplace</option>
+                                <option value="transaction_fee">Transaction Fee</option>
+                                <option value="one_time_purchase">One-time Purchase</option>
+                                <option value="advertising">Advertising</option>
+                                <option value="enterprise">Enterprise</option>
+                                <option value="b2b_saas">B2B SaaS</option>
+                                <option value="b2c_saas">B2C SaaS</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="target_users" class="form-label">Target Users</label>
+                        <input type="text" class="form-control" id="target_users" name="target_users" 
+                               placeholder="e.g., Small restaurant owners, Food service managers"
+                               maxlength="500">
+                        <div class="form-text">Who will use your solution? Be specific about your target audience.</div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="estimated_timeline" class="form-label">Estimated Timeline</label>
+                            <input type="text" class="form-control" id="estimated_timeline" name="estimated_timeline" 
+                                   placeholder="e.g., 3-6 months" maxlength="100">
+                        </div>
+
+                        <div class="col-md-6 mb-3">
+                            <label for="budget_range" class="form-label">Budget Range</label>
+                            <input type="text" class="form-control" id="budget_range" name="budget_range" 
+                                   placeholder="e.g., $10k-50k" maxlength="100">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="technical_constraints" class="form-label">Technical Constraints</label>
+                        <textarea class="form-control" id="technical_constraints" name="technical_constraints" rows="2" 
+                                  placeholder="Any technical preferences, constraints, or requirements?"
+                                  maxlength="1000"></textarea>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="existing_competitors" class="form-label">Known Competitors</label>
+                        <textarea class="form-control" id="existing_competitors" name="existing_competitors" rows="2" 
+                                  placeholder="List any existing solutions or competitors you're aware of"
+                                  maxlength="1000"></textarea>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <span class="spinner-border spinner-border-sm d-none" id="loadingSpinner"></span>
+                            Analyze & Generate Questionnaire
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Results Section (Initially Hidden) -->
+        <div id="resultsSection" class="mt-5 d-none">
+            <div class="card shadow-sm">
+                <div class="card-header bg-success text-white">
+                    <h4 class="card-title mb-0">Concept Analysis Complete</h4>
+                </div>
+                <div class="card-body" id="analysisResults">
+                    <!-- Results will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Questionnaire Section (Initially Hidden) -->
+        <div id="questionnaireSection" class="mt-5 d-none">
+            <div class="card shadow-sm">
+                <div class="card-header bg-info text-white">
+                    <h4 class="card-title mb-0">Answer These Questions</h4>
+                    <div class="progress mt-2" style="height: 6px;">
+                        <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="card-body" id="questionnaireContent">
+                    <!-- Questionnaire will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- PRP Generation Section (Initially Hidden) -->
+        <div id="prpSection" class="mt-5 d-none">
+            <div class="card shadow-sm">
+                <div class="card-header bg-warning text-dark">
+                    <h4 class="card-title mb-0">Generating Your PRP</h4>
+                </div>
+                <div class="card-body text-center" id="prpContent">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Generating PRP...</span>
+                    </div>
+                    <p class="mt-3">This may take a few minutes while we conduct research and generate your comprehensive PRP...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Final Results Section (Initially Hidden) -->
+        <div id="finalResults" class="mt-5 d-none">
+            <div class="card shadow-sm border-success">
+                <div class="card-header bg-success text-white">
+                    <h4 class="card-title mb-0">🎉 Your PRP is Ready!</h4>
+                </div>
+                <div class="card-body" id="finalResultsContent">
+                    <!-- Final results will be populated here -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- How It Works Section -->
+<div class="row mt-5">
+    <div class="col-12">
+        <div class="card bg-light">
+            <div class="card-body">
+                <h4 class="text-center mb-4">How It Works</h4>
+                <div class="row">
+                    <div class="col-md-3 text-center">
+                        <div class="mb-3">
+                            <span class="display-6 text-primary">1</span>
+                        </div>
+                        <h6>Describe Your Idea</h6>
+                        <p class="small">Share your business concept with as much detail as possible</p>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="mb-3">
+                            <span class="display-6 text-primary">2</span>
+                        </div>
+                        <h6>Answer Questions</h6>
+                        <p class="small">Our AI generates targeted questions to understand your requirements</p>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="mb-3">
+                            <span class="display-6 text-primary">3</span>
+                        </div>
+                        <h6>AI Research</h6>
+                        <p class="small">Automated research gathers technical patterns and best practices</p>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="mb-3">
+                            <span class="display-6 text-primary">4</span>
+                        </div>
+                        <h6>Get Your PRP</h6>
+                        <p class="small">Download a comprehensive PRP ready for AI implementation</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Global variables
+let currentConceptId = null;
+let currentSessionId = null;
+let currentQuestionIndex = 0;
+
+// Form submission
+document.getElementById('conceptForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const spinner = document.getElementById('loadingSpinner');
+    const originalText = submitBtn.innerHTML;
+    
+    // Show loading state
+    spinner.classList.remove('d-none');
+    submitBtn.disabled = true;
+    
+    try {
+        // Collect form data
+        const formData = new FormData(e.target);
+        const conceptData = {};
+        
+        for (let [key, value] of formData.entries()) {
+            if (value.trim()) {
+                conceptData[key] = value.trim();
+            }
+        }
+        
+        // Submit concept
+        const response = await fetch('/api/v1/concepts', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(conceptData)
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            currentConceptId = result.concept_id;
+            showAnalysisResults(result);
+            await generateQuestionnaire();
+        } else {
+            throw new Error(result.message || 'Failed to submit concept');
+        }
+        
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        // Reset loading state
+        spinner.classList.add('d-none');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+});
+
+function showAnalysisResults(result) {
+    const resultsSection = document.getElementById('resultsSection');
+    const analysisResults = document.getElementById('analysisResults');
+    
+    analysisResults.innerHTML = `
+        <div class="row">
+            <div class="col-md-8">
+                <h5>${result.title}</h5>
+                <p class="text-muted">${result.description}</p>
+                <p><strong>Status:</strong> <span class="badge bg-success">${result.status.replace('_', ' ')}</span></p>
+                <p><strong>Estimated Questions:</strong> ${result.estimated_questions}</p>
+            </div>
+            <div class="col-md-4 text-end">
+                <p><strong>Concept ID:</strong><br><code>${result.concept_id}</code></p>
+                <p><strong>Domain:</strong> ${result.domain || 'Not specified'}</p>
+                <p><strong>Business Model:</strong> ${result.business_model || 'Not specified'}</p>
+            </div>
+        </div>
+        <hr>
+        <p><strong>Next Step:</strong> ${result.next_step}</p>
+    `;
+    
+    resultsSection.classList.remove('d-none');
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function generateQuestionnaire() {
+    try {
+        const response = await fetch(`/api/v1/concepts/${currentConceptId}/questions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                max_questions: 10,
+                difficulty_level: 'intermediate'
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            currentSessionId = result.session_id;
+            showQuestionnaire(result);
+        } else {
+            throw new Error(result.message || 'Failed to generate questionnaire');
+        }
+        
+    } catch (error) {
+        alert('Error generating questionnaire: ' + error.message);
+    }
+}
+
+function showQuestionnaire(questionnaireData) {
+    const questionnaireSection = document.getElementById('questionnaireSection');
+    const progressBar = document.getElementById('progressBar');
+    
+    // Update progress
+    progressBar.style.width = `${questionnaireData.progress.percentage}%`;
+    
+    // Show current question
+    if (questionnaireData.current_question) {
+        displayQuestion(questionnaireData.current_question, questionnaireData.progress);
+    }
+    
+    questionnaireSection.classList.remove('d-none');
+    questionnaireSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+function displayQuestion(question, progress) {
+    const questionnaireContent = document.getElementById('questionnaireContent');
+    
+    let inputHTML = '';
+    
+    switch (question.type) {
+        case 'text':
+            inputHTML = `<textarea class="form-control" id="answer" rows="3" placeholder="Please provide your answer..."></textarea>`;
+            break;
+        case 'boolean':
+            inputHTML = `
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="answer" id="answerYes" value="Yes">
+                    <label class="form-check-label" for="answerYes">Yes</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="answer" id="answerNo" value="No">
+                    <label class="form-check-label" for="answerNo">No</label>
+                </div>
+            `;
+            break;
+        case 'single_select':
+        case 'multiple_choice':
+            if (question.options) {
+                inputHTML = question.options.map((option, index) => `
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="answer" id="option${index}" value="${option}">
+                        <label class="form-check-label" for="option${index}">${option}</label>
+                    </div>
+                `).join('');
+            }
+            break;
+        default:
+            inputHTML = `<input type="text" class="form-control" id="answer" placeholder="Please provide your answer...">`;
+    }
+    
+    questionnaireContent.innerHTML = `
+        <div class="mb-3">
+            <p class="text-muted">Question ${progress.completed + 1} of ${progress.total}</p>
+            <h5>${question.text}</h5>
+            ${question.help_text ? `<p class="text-muted"><small>${question.help_text}</small></p>` : ''}
+        </div>
+        <div class="mb-4">
+            ${inputHTML}
+        </div>
+        <div class="d-flex justify-content-between">
+            <div>
+                <label for="confidence" class="form-label">Confidence Level</label>
+                <input type="range" class="form-range" id="confidence" min="0" max="1" step="0.1" value="0.8">
+                <small class="text-muted">How confident are you in this answer?</small>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="submitAnswer('${question.id}')">
+                Submit Answer
+            </button>
+        </div>
+    `;
+}
+
+async function submitAnswer(questionId) {
+    try {
+        let answer = '';
+        
+        // Get answer based on input type
+        const textAnswer = document.getElementById('answer');
+        if (textAnswer) {
+            answer = textAnswer.value.trim();
+        } else {
+            const radioAnswer = document.querySelector('input[name="answer"]:checked');
+            if (radioAnswer) {
+                answer = radioAnswer.value;
+            }
+        }
+        
+        if (!answer) {
+            alert('Please provide an answer before continuing.');
+            return;
+        }
+        
+        const confidence = parseFloat(document.getElementById('confidence').value);
+        
+        const response = await fetch(`/api/v1/questionnaire/${currentSessionId}/answer`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                question_id: questionId,
+                answer: answer,
+                confidence_score: confidence
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            // Update progress
+            const progressBar = document.getElementById('progressBar');
+            progressBar.style.width = `${result.progress.percentage}%`;
+            
+            if (result.is_complete) {
+                // Questionnaire completed, start PRP generation
+                showPRPGeneration();
+                await generatePRP();
+            } else if (result.next_question) {
+                // Show next question
+                displayQuestion(result.next_question, result.progress);
+            }
+        } else {
+            throw new Error(result.message || 'Failed to submit answer');
+        }
+        
+    } catch (error) {
+        alert('Error submitting answer: ' + error.message);
+    }
+}
+
+function showPRPGeneration() {
+    const prpSection = document.getElementById('prpSection');
+    prpSection.classList.remove('d-none');
+    prpSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function generatePRP() {
+    try {
+        const response = await fetch(`/api/v1/concepts/${currentConceptId}/generate-prp`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            showFinalResults(result);
+        } else {
+            throw new Error(result.message || 'Failed to generate PRP');
+        }
+        
+    } catch (error) {
+        const prpContent = document.getElementById('prpContent');
+        prpContent.innerHTML = `
+            <div class="alert alert-danger">
+                <h5>Error Generating PRP</h5>
+                <p>${error.message}</p>
+                <button class="btn btn-outline-danger" onclick="generatePRP()">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function showFinalResults(prpData) {
+    const finalResults = document.getElementById('finalResults');
+    const finalResultsContent = document.getElementById('finalResultsContent');
+    
+    finalResultsContent.innerHTML = `
+        <div class="row">
+            <div class="col-md-8">
+                <h5>${prpData.title}</h5>
+                <p class="text-muted">Generated at: ${new Date(prpData.generated_at).toLocaleString()}</p>
+                
+                <div class="row mb-3">
+                    <div class="col-sm-6">
+                        <strong>Quality Score:</strong> ${prpData.quality_metrics.overall_score.toFixed(1)}/10
+                    </div>
+                    <div class="col-sm-6">
+                        <strong>Complexity:</strong> ${prpData.estimated_complexity}
+                    </div>
+                    <div class="col-sm-6">
+                        <strong>Validation Commands:</strong> ${prpData.validation_commands_count}
+                    </div>
+                    <div class="col-sm-6">
+                        <strong>Research Score:</strong> ${prpData.research_quality_score.toFixed(1)}/10
+                    </div>
+                </div>
+                
+                <div class="d-flex gap-2 flex-wrap">
+                    <a href="${prpData.download_url}" class="btn btn-success">
+                        <i class="bi bi-download"></i> Download PRP (.md)
+                    </a>
+                    <a href="${prpData.preview_url}" class="btn btn-outline-primary" target="_blank">
+                        <i class="bi bi-eye"></i> Preview PRP
+                    </a>
+                    <button class="btn btn-outline-secondary" onclick="location.reload()">
+                        <i class="bi bi-arrow-clockwise"></i> Start New PRP
+                    </button>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card bg-light">
+                    <div class="card-body">
+                        <h6 class="card-title">Quality Metrics</h6>
+                        <ul class="list-unstyled small">
+                            <li>Content: ${prpData.quality_metrics.content_completeness.toFixed(1)}/10</li>
+                            <li>Context: ${prpData.quality_metrics.context_richness.toFixed(1)}/10</li>
+                            <li>Validation: ${prpData.quality_metrics.validation_coverage.toFixed(1)}/10</li>
+                            <li>Technical: ${prpData.quality_metrics.technical_depth.toFixed(1)}/10</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <hr>
+        
+        <div class="alert alert-info">
+            <h6>Next Steps:</h6>
+            <ol class="mb-0">
+                <li>Download your PRP markdown file</li>
+                <li>Review the implementation blueprint and validation commands</li>
+                <li>Use Claude Code or similar AI agent to execute the PRP</li>
+                <li>Follow the validation loops to ensure quality implementation</li>
+            </ol>
+        </div>
+    `;
+    
+    // Hide PRP generation section
+    document.getElementById('prpSection').classList.add('d-none');
+    
+    // Show final results
+    finalResults.classList.remove('d-none');
+    finalResults.scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+{% endblock %}
