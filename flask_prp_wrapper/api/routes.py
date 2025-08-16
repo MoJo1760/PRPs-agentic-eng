@@ -21,6 +21,11 @@ from ..services.iterative_research_engine import IterativeResearchEngine
 from ..services.gap_analysis_service import GapAnalysisService
 from ..services.coverage_validator import CoverageValidator
 from ..models.coverage_metrics import StoppingCriteria
+from ..services.prd_parser import PRDParserService
+from ..services.prd_storage import PRDStorageService
+from ..models.prd_document import (
+    PRDUploadResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,8 @@ prp_generator = PRPGenerator()
 iterative_research_engine = IterativeResearchEngine()
 gap_analysis_service = GapAnalysisService()
 coverage_validator = CoverageValidator()
+prd_parser_service = PRDParserService()
+prd_storage_service = PRDStorageService()
 
 # In-memory storage for demo (would use Redis/database in production)
 sessions_store: Dict[str, Dict] = {}
@@ -107,7 +114,7 @@ def get_business_concept(concept_id: str):
 
 @bp.route("/concepts/<concept_id>/questions", methods=["POST"])
 def generate_questions(concept_id: str):
-    """Generate questionnaire for a business concept."""
+    """Generate questionnaire for a business concept with optional PRD awareness."""
     try:
         if concept_id not in concepts_store:
             return jsonify({"error": "Concept not found"}), 404
@@ -121,17 +128,66 @@ def generate_questions(concept_id: str):
             difficulty_level=request_data.get("difficulty_level", "intermediate"),
         )
 
+        # Check if PRD-aware generation is requested
+        use_prd_awareness = request_data.get(
+            "use_prd_awareness", True
+        )  # Default to True
+
         # Get concept
         concept_dict = concepts_store[concept_id]["concept"]
         concept = BusinessConceptRequest(**concept_dict)
 
-        # Generate questions
+        # Get PRD document if available and PRD awareness is requested
+        prd_document = None
+        if use_prd_awareness and "prd_documents" in concepts_store[concept_id]:
+            prd_docs = concepts_store[concept_id]["prd_documents"]
+            if prd_docs:
+                # Use the most recent PRD document
+                latest_prd_doc = max(prd_docs, key=lambda x: x["uploaded_at"])
+                document_id = latest_prd_doc["document_id"]
+
+                # Retrieve full PRD document
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    prd_document = loop.run_until_complete(
+                        prd_storage_service.get_prd_document(document_id)
+                    )
+                finally:
+                    loop.close()
+
+        # Get gap analysis if available
+        gap_analysis = None
+        if "gap_analysis" in concepts_store[concept_id]:
+            gap_analysis_data = concepts_store[concept_id]["gap_analysis"][
+                "gap_analysis"
+            ]
+            from ..models.gap_analysis import GapAnalysisResult
+
+            gap_analysis = GapAnalysisResult(**gap_analysis_data)
+
+        # Generate questions with PRD awareness
+        logger.info(
+            f"Generating questions for concept {concept_id} (PRD-aware: {prd_document is not None})"
+        )
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            questions = loop.run_until_complete(
-                questioning_engine.generate_questions(questionnaire_request, concept)
-            )
+            if prd_document:
+                questions = loop.run_until_complete(
+                    questioning_engine.generate_prd_aware_questions(
+                        concept=concept,
+                        prd_document=prd_document,
+                        gap_analysis=gap_analysis,
+                        max_questions=questionnaire_request.max_questions,
+                    )
+                )
+            else:
+                questions = loop.run_until_complete(
+                    questioning_engine.generate_questions(
+                        questionnaire_request, concept
+                    )
+                )
         finally:
             loop.close()
 
@@ -152,6 +208,12 @@ def generate_questions(concept_id: str):
             "total_questions": len(questions),
             "current_question": first_question.dict() if first_question else None,
             "progress": {"completed": 0, "total": len(questions), "percentage": 0.0},
+            "prd_integration": {
+                "used": prd_document is not None,
+                "document_id": prd_document.document_id if prd_document else None,
+                "questions_filtered": 0,  # Would need more complex tracking to get exact count
+                "prd_specific_questions": 0,  # Would need more complex tracking
+            },
         }
 
         logger.info(f"Generated {len(questions)} questions for concept {concept_id}")
@@ -488,15 +550,19 @@ def start_iterative_research(concept_id: str):
         # Parse optional parameters
         request_data = request.json or {}
         stopping_criteria = None
-        
+
         if "stopping_criteria" in request_data:
             criteria_data = request_data["stopping_criteria"]
             stopping_criteria = StoppingCriteria(
                 min_overall_coverage=criteria_data.get("min_overall_coverage", 95.0),
                 min_domain_coverage=criteria_data.get("min_domain_coverage", 85.0),
-                min_research_quality_score=criteria_data.get("min_research_quality_score", 7.0),
+                min_research_quality_score=criteria_data.get(
+                    "min_research_quality_score", 7.0
+                ),
                 max_iterations=criteria_data.get("max_iterations", 5),
-                max_research_time_minutes=criteria_data.get("max_research_time_minutes", 30),
+                max_research_time_minutes=criteria_data.get(
+                    "max_research_time_minutes", 30
+                ),
             )
 
         # Get concept
@@ -505,15 +571,20 @@ def start_iterative_research(concept_id: str):
 
         # Get existing research if available
         existing_research = None
-        if "prp" in concepts_store[concept_id] and "research_context" in concepts_store[concept_id]["prp"]:
+        if (
+            "prp" in concepts_store[concept_id]
+            and "research_context" in concepts_store[concept_id]["prp"]
+        ):
             research_data = concepts_store[concept_id]["prp"]["research_context"]
             from ..services.research_service import ResearchContext
+
             existing_research = ResearchContext(**research_data)
 
         # Get questionnaire responses if available
         questionnaire_responses = []
         concept_sessions = [
-            s for s in sessions_store.values() 
+            s
+            for s in sessions_store.values()
             if s.get("concept_id") == concept_id and s.get("is_complete", False)
         ]
         if concept_sessions:
@@ -582,10 +653,16 @@ def start_iterative_research(concept_id: str):
 
 @bp.route("/concepts/<concept_id>/gap-analysis", methods=["POST"])
 def analyze_concept_gaps(concept_id: str):
-    """Analyze knowledge gaps for a business concept."""
+    """Analyze knowledge gaps for a business concept with optional PRD integration."""
     try:
         if concept_id not in concepts_store:
             return jsonify({"error": "Concept not found"}), 404
+
+        # Parse request parameters
+        request_data = request.json or {}
+        use_prd_integration = request_data.get(
+            "use_prd_integration", True
+        )  # Default to True
 
         # Get concept
         concept_dict = concepts_store[concept_id]["concept"]
@@ -593,33 +670,69 @@ def analyze_concept_gaps(concept_id: str):
 
         # Get existing research if available
         existing_research = None
-        if "prp" in concepts_store[concept_id] and "research_context" in concepts_store[concept_id]["prp"]:
+        if (
+            "prp" in concepts_store[concept_id]
+            and "research_context" in concepts_store[concept_id]["prp"]
+        ):
             research_data = concepts_store[concept_id]["prp"]["research_context"]
             from ..services.research_service import ResearchContext
+
             existing_research = ResearchContext(**research_data)
 
         # Get questionnaire responses if available
         questionnaire_responses = []
         concept_sessions = [
-            s for s in sessions_store.values() 
+            s
+            for s in sessions_store.values()
             if s.get("concept_id") == concept_id and s.get("is_complete", False)
         ]
         if concept_sessions:
             latest_session = concept_sessions[-1]
             questionnaire_responses = latest_session.get("responses", [])
 
-        # Analyze gaps
-        logger.info(f"Analyzing gaps for concept {concept_id}")
+        # Get PRD document if available and PRD integration is requested
+        prd_document = None
+        if use_prd_integration and "prd_documents" in concepts_store[concept_id]:
+            prd_docs = concepts_store[concept_id]["prd_documents"]
+            if prd_docs:
+                # Use the most recent PRD document
+                latest_prd_doc = max(prd_docs, key=lambda x: x["uploaded_at"])
+                document_id = latest_prd_doc["document_id"]
+
+                # Retrieve full PRD document
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    prd_document = loop.run_until_complete(
+                        prd_storage_service.get_prd_document(document_id)
+                    )
+                finally:
+                    loop.close()
+
+        # Analyze gaps with or without PRD
+        logger.info(
+            f"Analyzing gaps for concept {concept_id} (PRD: {'Yes' if prd_document else 'No'})"
+        )
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            gap_analysis = loop.run_until_complete(
-                gap_analysis_service.analyze_concept_gaps(
-                    concept=concept,
-                    existing_research=existing_research,
-                    questionnaire_responses=questionnaire_responses,
+            if prd_document:
+                gap_analysis = loop.run_until_complete(
+                    gap_analysis_service.analyze_concept_gaps_with_prd(
+                        concept=concept,
+                        prd_document=prd_document,
+                        existing_research=existing_research,
+                        questionnaire_responses=questionnaire_responses,
+                    )
                 )
-            )
+            else:
+                gap_analysis = loop.run_until_complete(
+                    gap_analysis_service.analyze_concept_gaps(
+                        concept=concept,
+                        existing_research=existing_research,
+                        questionnaire_responses=questionnaire_responses,
+                    )
+                )
         finally:
             loop.close()
 
@@ -644,6 +757,11 @@ def analyze_concept_gaps(concept_id: str):
             "coverage_percentage": gap_analysis.coverage_percentage,
             "domain_completeness": gap_analysis.domain_completeness,
             "next_research_areas": gap_analysis.next_research_areas,
+            "prd_integration": {
+                "used": prd_document is not None,
+                "document_id": prd_document.document_id if prd_document else None,
+                "sections_analyzed": len(prd_document.sections) if prd_document else 0,
+            },
             "gaps": [
                 {
                     "id": gap.id,
@@ -665,9 +783,7 @@ def analyze_concept_gaps(concept_id: str):
     except Exception as e:
         logger.error(f"Error analyzing gaps for {concept_id}: {e}")
         logger.error(traceback.format_exc())
-        return jsonify(
-            {"error": "Failed to analyze gaps", "message": str(e)}
-        ), 500
+        return jsonify({"error": "Failed to analyze gaps", "message": str(e)}), 500
 
 
 @bp.route("/concepts/<concept_id>/gap-targeted-questions", methods=["POST"])
@@ -679,10 +795,12 @@ def generate_gap_targeted_questions(concept_id: str):
 
         # Check if gap analysis exists
         if "gap_analysis" not in concepts_store[concept_id]:
-            return jsonify({
-                "error": "Gap analysis not found", 
-                "message": "Please run gap analysis first"
-            }), 400
+            return jsonify(
+                {
+                    "error": "Gap analysis not found",
+                    "message": "Please run gap analysis first",
+                }
+            ), 400
 
         # Parse request parameters
         request_data = request.json or {}
@@ -691,9 +809,10 @@ def generate_gap_targeted_questions(concept_id: str):
         # Get concept and gap analysis
         concept_dict = concepts_store[concept_id]["concept"]
         concept = BusinessConceptRequest(**concept_dict)
-        
+
         gap_analysis_data = concepts_store[concept_id]["gap_analysis"]["gap_analysis"]
         from ..models.gap_analysis import GapAnalysisResult
+
         gap_analysis = GapAnalysisResult(**gap_analysis_data)
 
         # Generate gap-targeted questions
@@ -751,7 +870,7 @@ def get_research_progress(concept_id: str):
             return jsonify({"error": "Concept not found"}), 404
 
         concept_data = concepts_store[concept_id]
-        
+
         # Build progress summary
         progress = {
             "concept_id": concept_id,
@@ -777,7 +896,9 @@ def get_research_progress(concept_id: str):
             progress["iterative_research"] = {
                 "success": research_data["success"],
                 "iterations_completed": len(research_data["iterations"]),
-                "final_coverage": research_data["final_coverage_metrics"]["overall_coverage"],
+                "final_coverage": research_data["final_coverage_metrics"][
+                    "overall_coverage"
+                ],
                 "gaps_filled": research_data["gaps_filled"],
                 "ready_for_prp": research_data["ready_for_prp_generation"],
                 "research_time_minutes": research_data["total_research_time_minutes"],
@@ -785,8 +906,7 @@ def get_research_progress(concept_id: str):
 
         # Add questionnaire progress if available
         concept_sessions = [
-            s for s in sessions_store.values() 
-            if s.get("concept_id") == concept_id
+            s for s in sessions_store.values() if s.get("concept_id") == concept_id
         ]
         if concept_sessions:
             latest_session = concept_sessions[-1]
@@ -804,6 +924,527 @@ def get_research_progress(concept_id: str):
         logger.error(f"Error getting research progress for {concept_id}: {e}")
         return jsonify(
             {"error": "Failed to get research progress", "message": str(e)}
+        ), 500
+
+
+@bp.route("/concepts/<concept_id>/prd-upload", methods=["POST"])
+def upload_prd_document(concept_id: str):
+    """Upload and process PRD document for a business concept."""
+    try:
+        if concept_id not in concepts_store:
+            return jsonify({"error": "Concept not found"}), 404
+
+        # Check for file upload
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+
+        # Get configuration
+        from flask import current_app
+
+        config = current_app.config
+        allowed_extensions = config.get(
+            "PRD_ALLOWED_EXTENSIONS", {".md", ".markdown", ".txt"}
+        )
+        max_file_size = config.get("PRD_MAX_FILE_SIZE", 10 * 1024 * 1024)
+
+        # Validate file type
+        file_ext = (
+            "." + file.filename.rsplit(".", 1)[1].lower()
+            if "." in file.filename
+            else ""
+        )
+        if file_ext not in allowed_extensions:
+            return jsonify(
+                {
+                    "error": "Invalid file type",
+                    "message": f"Only {', '.join(allowed_extensions)} files are supported",
+                }
+            ), 400
+
+        # Read file content
+        file_content = file.read()
+
+        # Validate file size
+        if len(file_content) > max_file_size:
+            return jsonify(
+                {
+                    "error": "File too large",
+                    "message": f"File must be smaller than {max_file_size // (1024 * 1024)}MB",
+                }
+            ), 400
+
+        try:
+            content_str = file_content.decode("utf-8")
+        except UnicodeDecodeError:
+            return jsonify(
+                {
+                    "error": "Invalid file encoding",
+                    "message": "File must be UTF-8 encoded",
+                }
+            ), 400
+
+        # Validate PRD content quality
+        logger.info(f"Validating PRD content for concept {concept_id}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            validation_result = loop.run_until_complete(
+                prd_parser_service.validate_prd_content(content_str, file.filename)
+            )
+        finally:
+            loop.close()
+
+        if not validation_result.is_valid:
+            return jsonify(
+                {
+                    "error": "Invalid PRD content",
+                    "message": "PRD content does not meet minimum requirements",
+                    "validation_errors": validation_result.validation_errors,
+                    "validation_warnings": validation_result.validation_warnings,
+                }
+            ), 400
+
+        # Parse PRD content
+        logger.info(f"Parsing PRD content for concept {concept_id}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            parsed_sections = loop.run_until_complete(
+                prd_parser_service.parse_prd_content(content_str, file.filename)
+            )
+
+            # Extract business context
+            content_extraction = loop.run_until_complete(
+                prd_parser_service.extract_business_context(parsed_sections)
+            )
+        finally:
+            loop.close()
+
+        # Store PRD document
+        logger.info(f"Storing PRD document for concept {concept_id}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            document_id = loop.run_until_complete(
+                prd_storage_service.store_prd_document(
+                    concept_id=concept_id,
+                    file_content=file_content,
+                    filename=file.filename,
+                    parsed_sections=parsed_sections,
+                    content_extraction=content_extraction,
+                )
+            )
+        finally:
+            loop.close()
+
+        # Calculate coverage improvement if gap analysis exists
+        coverage_improvement = 0.0
+        reduced_questions = 0
+
+        if "gap_analysis" in concepts_store[concept_id]:
+            gap_analysis_data = concepts_store[concept_id]["gap_analysis"][
+                "gap_analysis"
+            ]
+            from ..models.gap_analysis import GapAnalysisResult
+
+            gap_analysis = GapAnalysisResult(**gap_analysis_data)
+
+            # Calculate coverage improvement
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                coverage_improvement = loop.run_until_complete(
+                    prd_parser_service.calculate_coverage_improvement(
+                        parsed_sections, gap_analysis.identified_gaps
+                    )
+                )
+            finally:
+                loop.close()
+
+            # Estimate reduced questions (approximate)
+            reduced_questions = int(
+                coverage_improvement * 0.15
+            )  # 15% of coverage improvement
+
+        # Store PRD association in concepts store
+        if "prd_documents" not in concepts_store[concept_id]:
+            concepts_store[concept_id]["prd_documents"] = []
+
+        concepts_store[concept_id]["prd_documents"].append(
+            {
+                "document_id": document_id,
+                "filename": file.filename,
+                "uploaded_at": datetime.utcnow().isoformat(),
+                "sections_count": len(parsed_sections),
+                "coverage_improvement": coverage_improvement,
+            }
+        )
+
+        # Generate response
+        response_data = PRDUploadResponse(
+            document_id=document_id,
+            concept_id=concept_id,
+            processing_status="parsed",
+            sections_identified=len(parsed_sections),
+            coverage_improvement=coverage_improvement,
+            reduced_questions=reduced_questions,
+            next_steps=[
+                "Review extracted business context",
+                "Run enhanced gap analysis with PRD integration",
+                "Generate PRD-aware questions if needed",
+                "Proceed with PRP generation using PRD insights",
+            ],
+            quality_score=validation_result.content_quality_score,
+        )
+
+        logger.info(
+            f"PRD uploaded successfully for concept {concept_id}: {document_id} "
+            f"({len(parsed_sections)} sections, {coverage_improvement:.1f}% improvement)"
+        )
+        return jsonify(response_data.dict()), 201
+
+    except Exception as e:
+        logger.error(f"Error uploading PRD for concept {concept_id}: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(
+            {"error": "Failed to upload PRD document", "message": str(e)}
+        ), 500
+
+
+@bp.route("/concepts/<concept_id>/prd-documents", methods=["GET"])
+def list_concept_prd_documents(concept_id: str):
+    """List all PRD documents for a business concept."""
+    try:
+        if concept_id not in concepts_store:
+            return jsonify({"error": "Concept not found"}), 404
+
+        # Get PRD documents from storage
+        logger.info(f"Listing PRD documents for concept {concept_id}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prd_documents = loop.run_until_complete(
+                prd_storage_service.list_concept_prds(concept_id)
+            )
+        finally:
+            loop.close()
+
+        # Convert to response format
+        documents_info = []
+        for doc in prd_documents:
+            doc_info = {
+                "document_id": doc.document_id,
+                "filename": doc.filename,
+                "upload_timestamp": doc.upload_timestamp.isoformat(),
+                "file_size_bytes": doc.file_size_bytes,
+                "sections_count": len(doc.sections),
+                "extraction_quality_score": doc.extraction_quality_score,
+                "processing_status": doc.processing_status,
+                "total_word_count": doc.total_word_count,
+                "coverage_areas": doc.coverage_areas,
+            }
+            documents_info.append(doc_info)
+
+        response = {
+            "concept_id": concept_id,
+            "documents_count": len(documents_info),
+            "documents": documents_info,
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error listing PRD documents for concept {concept_id}: {e}")
+        return jsonify(
+            {"error": "Failed to list PRD documents", "message": str(e)}
+        ), 500
+
+
+@bp.route("/prd-documents/<document_id>", methods=["GET"])
+def get_prd_document(document_id: str):
+    """Get detailed information about a PRD document."""
+    try:
+        # Retrieve document from storage
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prd_document = loop.run_until_complete(
+                prd_storage_service.get_prd_document(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not prd_document:
+            return jsonify({"error": "PRD document not found"}), 404
+
+        # Convert to response format
+        response = {
+            "document_id": prd_document.document_id,
+            "concept_id": prd_document.concept_id,
+            "filename": prd_document.filename,
+            "upload_timestamp": prd_document.upload_timestamp.isoformat(),
+            "file_size_bytes": prd_document.file_size_bytes,
+            "extraction_quality_score": prd_document.extraction_quality_score,
+            "processing_status": prd_document.processing_status,
+            "total_word_count": prd_document.total_word_count,
+            "coverage_areas": prd_document.coverage_areas,
+            "extracted_business_context": prd_document.extracted_business_context,
+            "sections": [
+                {
+                    "title": section.title,
+                    "section_type": section.section_type,
+                    "word_count": section.word_count,
+                    "confidence_score": section.confidence_score,
+                    "extracted_keywords": section.extracted_keywords,
+                    "section_level": section.section_level,
+                    "content_preview": section.content[:200] + "..."
+                    if len(section.content) > 200
+                    else section.content,
+                }
+                for section in prd_document.sections
+            ],
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error retrieving PRD document {document_id}: {e}")
+        return jsonify(
+            {"error": "Failed to retrieve PRD document", "message": str(e)}
+        ), 500
+
+
+@bp.route("/prd-documents/<document_id>/content", methods=["GET"])
+def get_prd_document_content(document_id: str):
+    """Get the full raw content of a PRD document."""
+    try:
+        # Retrieve raw content from storage
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            raw_content = loop.run_until_complete(
+                prd_storage_service.get_raw_file_content(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not raw_content:
+            return jsonify({"error": "PRD document content not found"}), 404
+
+        # Get document metadata for filename
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prd_document = loop.run_until_complete(
+                prd_storage_service.get_prd_document(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not prd_document:
+            return jsonify({"error": "PRD document metadata not found"}), 404
+
+        # Return as downloadable file or JSON response based on Accept header
+        if request.headers.get("Accept", "").startswith("application/json"):
+            return jsonify(
+                {
+                    "document_id": document_id,
+                    "filename": prd_document.filename,
+                    "content": raw_content.decode("utf-8"),
+                    "file_size_bytes": len(raw_content),
+                }
+            ), 200
+        else:
+            # Return as file download
+            from flask import Response
+
+            return Response(
+                raw_content,
+                mimetype="text/markdown",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{prd_document.filename}"',
+                    "Content-Type": "text/markdown; charset=utf-8",
+                },
+            )
+
+    except Exception as e:
+        logger.error(f"Error retrieving PRD document content {document_id}: {e}")
+        return jsonify(
+            {"error": "Failed to retrieve PRD document content", "message": str(e)}
+        ), 500
+
+
+@bp.route("/prd-documents/<document_id>", methods=["DELETE"])
+def delete_prd_document(document_id: str):
+    """Delete a PRD document."""
+    try:
+        # Get document info first
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prd_document = loop.run_until_complete(
+                prd_storage_service.get_prd_document(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not prd_document:
+            return jsonify({"error": "PRD document not found"}), 404
+
+        concept_id = prd_document.concept_id
+
+        # Delete from storage
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            success = loop.run_until_complete(
+                prd_storage_service.delete_prd_document(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not success:
+            return jsonify({"error": "Failed to delete PRD document"}), 500
+
+        # Remove from concepts store
+        if (
+            concept_id in concepts_store
+            and "prd_documents" in concepts_store[concept_id]
+        ):
+            concepts_store[concept_id]["prd_documents"] = [
+                doc
+                for doc in concepts_store[concept_id]["prd_documents"]
+                if doc["document_id"] != document_id
+            ]
+
+        logger.info(f"Successfully deleted PRD document {document_id}")
+        return jsonify(
+            {"message": "PRD document deleted successfully", "document_id": document_id}
+        ), 200
+
+    except Exception as e:
+        logger.error(f"Error deleting PRD document {document_id}: {e}")
+        return jsonify(
+            {"error": "Failed to delete PRD document", "message": str(e)}
+        ), 500
+
+
+@bp.route("/concepts/<concept_id>/prd-enhancement-questions", methods=["POST"])
+def generate_prd_enhancement_questions(concept_id: str):
+    """Generate questions to enhance PRD-based business concept analysis."""
+    try:
+        if concept_id not in concepts_store:
+            return jsonify({"error": "Concept not found"}), 404
+
+        # Check if PRD documents exist
+        if (
+            "prd_documents" not in concepts_store[concept_id]
+            or not concepts_store[concept_id]["prd_documents"]
+        ):
+            return jsonify(
+                {
+                    "error": "No PRD documents found",
+                    "message": "Please upload a PRD document first",
+                }
+            ), 400
+
+        # Check if gap analysis exists
+        if "gap_analysis" not in concepts_store[concept_id]:
+            return jsonify(
+                {
+                    "error": "Gap analysis not found",
+                    "message": "Please run gap analysis first",
+                }
+            ), 400
+
+        # Parse request parameters
+        request_data = request.json or {}
+        max_questions = request_data.get("max_questions", 8)
+
+        # Get concept, PRD document, and gap analysis
+        concept_dict = concepts_store[concept_id]["concept"]
+        concept = BusinessConceptRequest(**concept_dict)
+
+        # Get most recent PRD document
+        latest_prd_doc = max(
+            concepts_store[concept_id]["prd_documents"], key=lambda x: x["uploaded_at"]
+        )
+        document_id = latest_prd_doc["document_id"]
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prd_document = loop.run_until_complete(
+                prd_storage_service.get_prd_document(document_id)
+            )
+        finally:
+            loop.close()
+
+        if not prd_document:
+            return jsonify({"error": "PRD document not found"}), 404
+
+        # Get gap analysis
+        gap_analysis_data = concepts_store[concept_id]["gap_analysis"]["gap_analysis"]
+        from ..models.gap_analysis import GapAnalysisResult
+
+        gap_analysis = GapAnalysisResult(**gap_analysis_data)
+
+        # Generate PRD enhancement questions
+        logger.info(f"Generating PRD enhancement questions for concept {concept_id}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            enhancement_questions = loop.run_until_complete(
+                questioning_engine.generate_prd_enhancement_questions(
+                    concept=concept,
+                    prd_document=prd_document,
+                    gap_analysis=gap_analysis,
+                    max_questions=max_questions,
+                )
+            )
+        finally:
+            loop.close()
+
+        # Store the questions
+        question_data = {
+            "questions": [q.dict() for q in enhancement_questions],
+            "generated_at": datetime.utcnow().isoformat(),
+            "prd_document_id": prd_document.document_id,
+            "gaps_addressed": len(gap_analysis.identified_gaps),
+        }
+
+        if "prd_enhancement_questions" not in concepts_store[concept_id]:
+            concepts_store[concept_id]["prd_enhancement_questions"] = question_data
+        else:
+            concepts_store[concept_id]["prd_enhancement_questions"].update(
+                question_data
+            )
+
+        response = {
+            "concept_id": concept_id,
+            "questions_generated": len(enhancement_questions),
+            "prd_document_id": prd_document.document_id,
+            "gaps_addressed": len(gap_analysis.identified_gaps),
+            "questions": [q.dict() for q in enhancement_questions],
+            "usage_note": "These questions target areas not well covered by the PRD but important for comprehensive analysis",
+        }
+
+        logger.info(
+            f"Generated {len(enhancement_questions)} PRD enhancement questions for concept {concept_id}"
+        )
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(
+            f"Error generating PRD enhancement questions for {concept_id}: {e}"
+        )
+        logger.error(traceback.format_exc())
+        return jsonify(
+            {"error": "Failed to generate PRD enhancement questions", "message": str(e)}
         ), 500
 
 
