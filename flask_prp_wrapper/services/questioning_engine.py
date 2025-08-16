@@ -19,6 +19,7 @@ from ..models.questionnaire import (
     QuestionnaireGenerationRequest,
 )
 from ..models.gap_analysis import KnowledgeGap, GapAnalysisResult
+from ..models.prd_document import PRDDocument, PRDSection
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +472,7 @@ class QuestioningEngine:
         for gap in prioritized_gaps[:max_questions]:
             # Generate question based on gap category and description
             question_text = self._generate_question_for_gap(gap, concept)
-            
+
             if question_text:
                 question_category = self._map_gap_category_to_question_category(
                     gap.category
@@ -563,29 +564,36 @@ class QuestioningEngine:
     ) -> str:
         """Generate a specific question text for a knowledge gap."""
         templates = self._get_gap_question_templates().get(gap.category, [])
-        
+
         if templates:
             # Use the first template as base and customize it
             base_question = templates[0]
-            
+
             # Customize based on gap description
             if "Missing or insufficient information about:" in gap.description:
                 specific_info = gap.description.replace(
                     "Missing or insufficient information about:", ""
                 ).strip()
                 return f"Can you provide details about {specific_info}?"
-            
+
             # Customize based on domain
             domain_context = ""
             if concept.domain:
                 domain_context = f" for your {concept.domain.value} solution"
-            
-            return base_question.replace("this", concept.title).replace("your solution", f"your {concept.title}") + domain_context
-        
+
+            return (
+                base_question.replace("this", concept.title).replace(
+                    "your solution", f"your {concept.title}"
+                )
+                + domain_context
+            )
+
         # Fallback generic question
         return f"Can you provide more information about {gap.category.replace('_', ' ')} for {concept.title}?"
 
-    def _map_gap_category_to_question_category(self, gap_category: str) -> QuestionCategory:
+    def _map_gap_category_to_question_category(
+        self, gap_category: str
+    ) -> QuestionCategory:
         """Map gap category to questionnaire question category."""
         category_mapping = {
             "business_model": QuestionCategory.BUSINESS_MODEL,
@@ -596,7 +604,7 @@ class QuestioningEngine:
             "deployment": QuestionCategory.TECHNICAL_REQUIREMENTS,  # Map to closest match
             "goal_definition": QuestionCategory.BUSINESS_MODEL,  # Map to closest match
         }
-        
+
         return category_mapping.get(gap_category, QuestionCategory.OTHER)
 
     def _determine_question_type_for_gap(self, gap: KnowledgeGap) -> QuestionType:
@@ -613,7 +621,7 @@ class QuestioningEngine:
                 for word in ["choose", "select", "option", "tier", "model"]
             ):
                 return QuestionType.SINGLE_SELECT
-        
+
         # Default to text for detailed explanations
         return QuestionType.TEXT
 
@@ -698,7 +706,7 @@ class QuestioningEngine:
 
         # Combine and deduplicate
         all_questions = existing_questions + additional_questions
-        
+
         # Remove duplicate questions (same text)
         seen_texts = set()
         unique_questions = []
@@ -722,10 +730,10 @@ class QuestioningEngine:
         # Find gaps in categories not covered or high-priority gaps
         uncovered_gaps = []
         for gap in gaps:
-            if (
-                gap.category not in covered_categories
-                or gap.priority in ["critical", "high"]
-            ):
+            if gap.category not in covered_categories or gap.priority in [
+                "critical",
+                "high",
+            ]:
                 uncovered_gaps.append(gap)
 
         return uncovered_gaps
@@ -764,9 +772,9 @@ class QuestioningEngine:
         for response in unclear_responses[:max_questions]:
             # Find the original question
             original_question_id = response.question_id
-            
+
             follow_up_text = f"Can you provide more details about your previous answer regarding '{response.answer[:50]}...'?"
-            
+
             follow_up = Question(
                 id=f"followup_{question_counter}_{original_question_id}",
                 text=follow_up_text,
@@ -779,10 +787,508 @@ class QuestioningEngine:
                     "original_confidence": response.confidence_score,
                 },
             )
-            
+
             follow_up_questions.append(follow_up)
             question_counter += 1
 
         logger.info(f"Generated {len(follow_up_questions)} follow-up questions")
-        
+
         return follow_up_questions
+
+    async def generate_prd_aware_questions(
+        self,
+        concept: BusinessConceptRequest,
+        prd_document: Optional[PRDDocument],
+        gap_analysis: Optional[GapAnalysisResult] = None,
+        max_questions: int = 10,
+    ) -> List[Question]:
+        """Generate questions that account for PRD content to avoid redundancy.
+
+        Args:
+            concept: Business concept being researched
+            prd_document: Associated PRD document (optional)
+            gap_analysis: Gap analysis result (optional)
+            max_questions: Maximum number of questions to generate
+
+        Returns:
+            List of PRD-aware questions
+        """
+        logger.info(f"Generating PRD-aware questions for concept: {concept.title}")
+
+        # Generate base questions
+        request = QuestionnaireGenerationRequest(
+            concept_id="temp", max_questions=max_questions, focus_areas=[]
+        )
+        base_questions = await self.generate_questions(request, concept)
+
+        if not prd_document:
+            # No PRD available, return base questions
+            return base_questions
+
+        # Filter out questions already answered by PRD
+        filtered_questions = self._filter_questions_by_prd_coverage(
+            base_questions, prd_document
+        )
+
+        # Add PRD-specific follow-up questions
+        prd_specific_questions = self._generate_prd_specific_questions(
+            prd_document, concept
+        )
+
+        # Combine and prioritize
+        all_questions = filtered_questions + prd_specific_questions
+
+        # Sort by priority and limit
+        prioritized = sorted(all_questions, key=lambda q: q.priority)[:max_questions]
+
+        logger.info(
+            f"Generated {len(prioritized)} PRD-aware questions "
+            f"(filtered {len(base_questions) - len(filtered_questions)} redundant, "
+            f"added {len(prd_specific_questions)} PRD-specific)"
+        )
+
+        return prioritized
+
+    def _filter_questions_by_prd_coverage(
+        self, questions: List[Question], prd_document: PRDDocument
+    ) -> List[Question]:
+        """Filter out questions already answered by PRD content.
+
+        Args:
+            questions: Original list of questions
+            prd_document: PRD document to check against
+
+        Returns:
+            Filtered list of questions
+        """
+        filtered_questions = []
+        prd_coverage = self._analyze_prd_question_coverage(prd_document)
+
+        for question in questions:
+            # Check if PRD covers this question's category and content
+            is_covered = self._is_question_covered_by_prd(
+                question, prd_coverage, prd_document
+            )
+
+            if not is_covered:
+                filtered_questions.append(question)
+            else:
+                logger.debug(
+                    f"Filtered out question '{question.text}' - covered by PRD"
+                )
+
+        return filtered_questions
+
+    def _analyze_prd_question_coverage(
+        self, prd_document: PRDDocument
+    ) -> Dict[str, Dict]:
+        """Analyze what question categories and topics are covered by PRD.
+
+        Returns:
+            Dictionary mapping question categories to coverage information
+        """
+        coverage = {
+            "business_model": {"covered": False, "confidence": 0.0, "sections": []},
+            "target_market": {"covered": False, "confidence": 0.0, "sections": []},
+            "technical_requirements": {
+                "covered": False,
+                "confidence": 0.0,
+                "sections": [],
+            },
+            "user_experience": {"covered": False, "confidence": 0.0, "sections": []},
+            "integration": {"covered": False, "confidence": 0.0, "sections": []},
+            "validation": {"covered": False, "confidence": 0.0, "sections": []},
+        }
+
+        for section in prd_document.sections:
+            # Map PRD section types to question categories
+            if section.section_type == "business_model":
+                self._update_coverage(coverage, "business_model", section)
+            elif section.section_type == "users":
+                self._update_coverage(coverage, "target_market", section)
+                self._update_coverage(coverage, "user_experience", section)
+            elif section.section_type in ["technical", "requirements"]:
+                self._update_coverage(coverage, "technical_requirements", section)
+                if "integration" in section.content.lower():
+                    self._update_coverage(coverage, "integration", section)
+            elif section.section_type == "metrics":
+                self._update_coverage(coverage, "validation", section)
+            elif section.section_type == "user_stories":
+                self._update_coverage(coverage, "user_experience", section)
+
+        return coverage
+
+    def _update_coverage(
+        self, coverage: Dict, category: str, section: PRDSection
+    ) -> None:
+        """Update coverage information for a category based on PRD section."""
+        if category in coverage:
+            coverage[category]["sections"].append(section)
+            # Calculate coverage confidence based on section quality
+            section_quality = (
+                section.confidence_score
+                * min(1.0, section.word_count / 50)  # 50+ words for good coverage
+            )
+            coverage[category]["confidence"] = max(
+                coverage[category]["confidence"], section_quality
+            )
+            coverage[category]["covered"] = coverage[category]["confidence"] > 0.6
+
+    def _is_question_covered_by_prd(
+        self, question: Question, prd_coverage: Dict, prd_document: PRDDocument
+    ) -> bool:
+        """Check if a specific question is covered by PRD content.
+
+        Args:
+            question: Question to check
+            prd_coverage: PRD coverage analysis
+            prd_document: PRD document
+
+        Returns:
+            True if question is sufficiently covered by PRD
+        """
+        question_category = question.category.value.lower()
+
+        # Check category-level coverage
+        if question_category in prd_coverage:
+            category_coverage = prd_coverage[question_category]
+            if category_coverage["covered"] and category_coverage["confidence"] > 0.7:
+                return True
+
+        # Check specific question content against PRD
+        question_keywords = self._extract_question_keywords(question.text)
+
+        for section in prd_document.sections:
+            section_content = section.content.lower()
+            keyword_matches = sum(
+                1 for keyword in question_keywords if keyword in section_content
+            )
+
+            if keyword_matches >= len(question_keywords) * 0.6:  # 60% keyword match
+                if section.confidence_score > 0.7 and section.word_count > 30:
+                    return True
+
+        return False
+
+    def _extract_question_keywords(self, question_text: str) -> List[str]:
+        """Extract key terms from a question for matching against PRD content."""
+        # Remove question words and common terms
+        stop_words = {
+            "what",
+            "how",
+            "who",
+            "when",
+            "where",
+            "why",
+            "do",
+            "does",
+            "will",
+            "would",
+            "could",
+            "should",
+            "can",
+            "are",
+            "is",
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "but",
+            "for",
+            "your",
+            "you",
+            "this",
+            "that",
+            "it",
+        }
+
+        words = question_text.lower().replace("?", "").split()
+        keywords = []
+
+        for word in words:
+            # Remove punctuation
+            clean_word = "".join(c for c in word if c.isalnum())
+            if clean_word and len(clean_word) > 2 and clean_word not in stop_words:
+                keywords.append(clean_word)
+
+        return keywords[:5]  # Limit to top 5 keywords
+
+    def _generate_prd_specific_questions(
+        self, prd_document: PRDDocument, concept: BusinessConceptRequest
+    ) -> List[Question]:
+        """Generate questions specific to content found in the PRD.
+
+        Args:
+            prd_document: PRD document to generate questions from
+            concept: Business concept context
+
+        Returns:
+            List of PRD-specific questions
+        """
+        prd_questions = []
+        question_counter = 1
+
+        # Generate questions based on PRD sections with low confidence
+        for section in prd_document.sections:
+            if section.confidence_score < 0.7 or section.word_count < 50:
+                # Section needs clarification
+                question_text = self._generate_clarification_question(section, concept)
+                if question_text:
+                    question = Question(
+                        id=f"prd_clarify_{question_counter}",
+                        text=question_text,
+                        type=QuestionType.TEXT,
+                        category=self._map_prd_section_to_question_category(
+                            section.section_type
+                        ),
+                        priority=2,
+                        metadata={
+                            "prd_section_title": section.title,
+                            "prd_section_type": section.section_type,
+                            "clarification_reason": "low_confidence_or_brief",
+                        },
+                    )
+                    prd_questions.append(question)
+                    question_counter += 1
+
+        # Generate questions about missing sections
+        expected_sections = {
+            "business_model",
+            "users",
+            "requirements",
+            "technical",
+            "metrics",
+            "competitive",
+        }
+        found_sections = {s.section_type for s in prd_document.sections}
+        missing_sections = expected_sections - found_sections
+
+        for missing_section in missing_sections:
+            question_text = self._generate_missing_section_question(
+                missing_section, concept
+            )
+            if question_text:
+                question = Question(
+                    id=f"prd_missing_{question_counter}",
+                    text=question_text,
+                    type=QuestionType.TEXT,
+                    category=self._map_prd_section_to_question_category(
+                        missing_section
+                    ),
+                    priority=1,  # High priority for missing sections
+                    metadata={
+                        "missing_section": missing_section,
+                        "question_reason": "section_missing_from_prd",
+                    },
+                )
+                prd_questions.append(question)
+                question_counter += 1
+
+        return prd_questions[:5]  # Limit PRD-specific questions
+
+    def _generate_clarification_question(
+        self, section: PRDSection, concept: BusinessConceptRequest
+    ) -> Optional[str]:
+        """Generate a clarification question for a PRD section."""
+        section_type_questions = {
+            "overview": f"Can you provide more details about the core functionality of {concept.title}?",
+            "users": f"Can you elaborate on who the target users are for {concept.title}?",
+            "business_model": f"Can you clarify the monetization strategy for {concept.title}?",
+            "technical": f"What are the specific technical requirements for {concept.title}?",
+            "requirements": f"Can you provide more detailed functional requirements for {concept.title}?",
+            "metrics": f"What specific success metrics will you track for {concept.title}?",
+            "competitive": f"Can you provide more details about the competitive landscape for {concept.title}?",
+            "user_stories": f"Can you elaborate on the key user scenarios for {concept.title}?",
+        }
+
+        base_question = section_type_questions.get(section.section_type)
+        if not base_question:
+            return f"Can you provide more information about the '{section.title}' section in your PRD?"
+
+        return base_question
+
+    def _generate_missing_section_question(
+        self, missing_section: str, concept: BusinessConceptRequest
+    ) -> Optional[str]:
+        """Generate a question for a missing PRD section."""
+        missing_section_questions = {
+            "business_model": f"Your PRD doesn't include business model details. How do you plan to monetize {concept.title}?",
+            "users": f"Your PRD lacks user information. Who are the target users for {concept.title}?",
+            "technical": f"Your PRD is missing technical details. What are the key technical requirements for {concept.title}?",
+            "requirements": f"Your PRD doesn't specify functional requirements. What features must {concept.title} include?",
+            "metrics": f"Your PRD lacks success metrics. How will you measure the success of {concept.title}?",
+            "competitive": f"Your PRD doesn't include competitive analysis. Who are the main competitors for {concept.title}?",
+        }
+
+        return missing_section_questions.get(missing_section)
+
+    def _map_prd_section_to_question_category(
+        self, section_type: str
+    ) -> QuestionCategory:
+        """Map PRD section type to question category."""
+        section_to_category = {
+            "overview": QuestionCategory.BUSINESS_MODEL,
+            "users": QuestionCategory.TARGET_MARKET,
+            "business_model": QuestionCategory.BUSINESS_MODEL,
+            "technical": QuestionCategory.TECHNICAL_REQUIREMENTS,
+            "requirements": QuestionCategory.TECHNICAL_REQUIREMENTS,
+            "metrics": QuestionCategory.VALIDATION,
+            "competitive": QuestionCategory.BUSINESS_MODEL,
+            "user_stories": QuestionCategory.USER_EXPERIENCE,
+        }
+
+        return section_to_category.get(section_type, QuestionCategory.OTHER)
+
+    async def generate_prd_enhancement_questions(
+        self,
+        concept: BusinessConceptRequest,
+        prd_document: PRDDocument,
+        gap_analysis: GapAnalysisResult,
+        max_questions: int = 8,
+    ) -> List[Question]:
+        """Generate questions to enhance PRD-based business concept analysis.
+
+        These questions focus on areas not well covered by the PRD but important
+        for gap analysis and business concept development.
+
+        Args:
+            concept: Business concept being developed
+            prd_document: Associated PRD document
+            gap_analysis: Current gap analysis with PRD integration
+            max_questions: Maximum questions to generate
+
+        Returns:
+            List of enhancement-focused questions
+        """
+        enhancement_questions = []
+        question_counter = 1
+
+        # Analyze gaps remaining after PRD integration
+        high_priority_gaps = [
+            gap
+            for gap in gap_analysis.identified_gaps
+            if gap.priority in ["critical", "high"]
+        ]
+
+        # Generate targeted questions for remaining high-priority gaps
+        for gap in high_priority_gaps[: max_questions // 2]:
+            question_text = self._generate_prd_gap_enhancement_question(
+                gap, prd_document, concept
+            )
+
+            if question_text:
+                question = Question(
+                    id=f"prd_enhance_{question_counter}",
+                    text=question_text,
+                    type=self._determine_question_type_for_gap(gap),
+                    category=self._map_gap_category_to_question_category(gap.category),
+                    priority=1 if gap.priority == "critical" else 2,
+                    metadata={
+                        "gap_id": gap.id,
+                        "enhancement_type": "prd_gap_fill",
+                        "prd_coverage_insufficient": True,
+                    },
+                )
+                enhancement_questions.append(question)
+                question_counter += 1
+
+        # Add questions about implementation specifics not in PRD
+        implementation_questions = self._generate_implementation_questions(
+            concept, prd_document
+        )
+
+        remaining_slots = max_questions - len(enhancement_questions)
+        enhancement_questions.extend(implementation_questions[:remaining_slots])
+
+        logger.info(
+            f"Generated {len(enhancement_questions)} PRD enhancement questions "
+            f"targeting {len(high_priority_gaps)} high-priority gaps"
+        )
+
+        return enhancement_questions
+
+    def _generate_prd_gap_enhancement_question(
+        self,
+        gap: KnowledgeGap,
+        prd_document: PRDDocument,
+        concept: BusinessConceptRequest,
+    ) -> Optional[str]:
+        """Generate a question to address a gap not fully covered by PRD."""
+        # Find if PRD has any related content for this gap
+        related_sections = []
+        for section in prd_document.sections:
+            if gap.category in section.content.lower() or any(
+                keyword in section.content.lower()
+                for keyword in gap.description.lower().split()[:3]
+            ):
+                related_sections.append(section)
+
+        if related_sections:
+            # PRD has some content but it's insufficient
+            section_titles = [s.title for s in related_sections[:2]]
+            return (
+                f"Your PRD mentions {', '.join(section_titles)} but lacks detail. "
+                f"Can you provide more specifics about {gap.category.replace('_', ' ')} for {concept.title}?"
+            )
+        else:
+            # PRD has no content for this gap
+            return (
+                f"Your PRD doesn't address {gap.category.replace('_', ' ')}. "
+                f"Can you provide information about this aspect of {concept.title}?"
+            )
+
+    def _generate_implementation_questions(
+        self, concept: BusinessConceptRequest, prd_document: PRDDocument
+    ) -> List[Question]:
+        """Generate questions about implementation specifics not typically in PRDs."""
+        questions = []
+        counter = 1
+
+        # Deployment and infrastructure questions
+        if not any(
+            "deploy" in s.content.lower() or "host" in s.content.lower()
+            for s in prd_document.sections
+        ):
+            questions.append(
+                Question(
+                    id=f"impl_deploy_{counter}",
+                    text=f"Where and how do you plan to deploy {concept.title}? (cloud, on-premise, etc.)",
+                    type=QuestionType.TEXT,
+                    category=QuestionCategory.TECHNICAL_REQUIREMENTS,
+                    priority=3,
+                    metadata={"implementation_area": "deployment"},
+                )
+            )
+            counter += 1
+
+        # Team and resource questions
+        questions.append(
+            Question(
+                id=f"impl_team_{counter}",
+                text=f"What team size and skills do you have available to build {concept.title}?",
+                type=QuestionType.TEXT,
+                category=QuestionCategory.OTHER,
+                priority=4,
+                metadata={"implementation_area": "team_resources"},
+            )
+        )
+        counter += 1
+
+        # Timeline and milestones
+        if not any(
+            "timeline" in s.content.lower() or "milestone" in s.content.lower()
+            for s in prd_document.sections
+        ):
+            questions.append(
+                Question(
+                    id=f"impl_timeline_{counter}",
+                    text=f"What's your target timeline and key milestones for launching {concept.title}?",
+                    type=QuestionType.TEXT,
+                    category=QuestionCategory.OTHER,
+                    priority=3,
+                    metadata={"implementation_area": "timeline"},
+                )
+            )
+
+        return questions[:3]  # Limit implementation questions
