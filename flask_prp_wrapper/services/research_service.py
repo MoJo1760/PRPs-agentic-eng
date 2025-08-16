@@ -752,7 +752,9 @@ class ResearchService:
         Returns:
             Research context focused on addressing the gaps
         """
-        logger.info(f"Conducting gap-targeted research for {len(gaps)} gaps in {domain}")
+        logger.info(
+            f"Conducting gap-targeted research for {len(gaps)} gaps in {domain}"
+        )
 
         # Prioritize gaps by priority and confidence score
         prioritized_gaps = sorted(
@@ -789,7 +791,9 @@ class ResearchService:
             return merged_context
         else:
             # Fallback to general research if gap-specific research fails
-            logger.warning("Gap-targeted research failed, falling back to general research")
+            logger.warning(
+                "Gap-targeted research failed, falling back to general research"
+            )
             return await self.gather_business_domain_context(
                 domain, business_model, concept_description
             )
@@ -809,7 +813,9 @@ class ResearchService:
         research_results = []
         for query in gap_queries[:3]:  # Limit queries per gap
             try:
-                results = await self._web_search_with_official_priority(query, max_results=5)
+                results = await self._web_search_with_official_priority(
+                    query, max_results=5
+                )
                 research_results.extend(results)
             except Exception as e:
                 logger.warning(f"Query '{query}' failed: {e}")
@@ -844,7 +850,9 @@ class ResearchService:
 
         # Business model specific queries
         if business_model and business_model != "general":
-            model_query = f"{business_model} {gap.category.replace('_', ' ')} patterns {domain}"
+            model_query = (
+                f"{business_model} {gap.category.replace('_', ' ')} patterns {domain}"
+            )
             queries.append(model_query)
 
         return queries
@@ -852,18 +860,35 @@ class ResearchService:
     def _extract_gap_terms(self, gap_description: str) -> str:
         """Extract key terms from gap description for targeted queries."""
         # Remove common prefix
-        clean_desc = gap_description.replace("Missing or insufficient information about:", "").strip()
-        
+        clean_desc = gap_description.replace(
+            "Missing or insufficient information about:", ""
+        ).strip()
+
         # Extract meaningful terms
         meaningful_words = []
-        stop_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an'}
-        
-        words = re.findall(r'\b\w+\b', clean_desc.lower())
+        stop_words = {
+            "the",
+            "and",
+            "or",
+            "but",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "of",
+            "with",
+            "by",
+            "a",
+            "an",
+        }
+
+        words = re.findall(r"\b\w+\b", clean_desc.lower())
         for word in words:
             if len(word) > 3 and word not in stop_words:
                 meaningful_words.append(word)
-        
-        return ' '.join(meaningful_words[:3])  # Top 3 meaningful terms
+
+        return " ".join(meaningful_words[:3])  # Top 3 meaningful terms
 
     def _get_category_specific_queries(self, category: str, domain: str) -> List[str]:
         """Get category-specific research queries."""
@@ -899,7 +924,7 @@ class ResearchService:
                 f"{domain} scaling best practices",
             ],
         }
-        
+
         return category_query_map.get(category, [])
 
     async def _convert_results_to_context(
@@ -914,18 +939,21 @@ class ResearchService:
         technical_patterns = []
         best_practices = []
         official_docs = []
-        
+
         for result in search_results:
             if result.is_official_docs:
                 official_docs.append(result.url)
-                
+
             # Extract patterns and practices from snippets
             if gap.category in ["technical_requirements", "deployment"]:
                 pattern = self._extract_pattern_from_snippet(result.snippet)
                 if pattern:
                     technical_patterns.append(f"{pattern} (from {result.domain})")
-            
-            if any(word in result.snippet.lower() for word in ["best practice", "recommend", "should"]):
+
+            if any(
+                word in result.snippet.lower()
+                for word in ["best practice", "recommend", "should"]
+            ):
                 practice = self._extract_best_practice_from_snippet(result.snippet)
                 if practice:
                     best_practices.append(f"{practice} (from {result.domain})")
@@ -935,10 +963,12 @@ class ResearchService:
 
         # Generate recommendations based on gap category
         recommendations = self._generate_gap_specific_recommendations(gap, domain)
-        
+
         # Calculate quality score based on official sources
         official_source_count = len(official_docs)
-        quality_score = min(10.0, official_source_count * 2.0 + len(technical_patterns) * 0.5)
+        quality_score = min(
+            10.0, official_source_count * 2.0 + len(technical_patterns) * 0.5
+        )
 
         return ResearchContext(
             domain_overview=gap_focused_overview,
@@ -953,100 +983,128 @@ class ResearchService:
             research_quality_score=quality_score,
         )
 
-    def _generate_gap_specific_recommendations(self, gap: KnowledgeGap, domain: str) -> List[str]:
+    def _generate_gap_specific_recommendations(
+        self, gap: KnowledgeGap, domain: str
+    ) -> List[str]:
         """Generate technology recommendations specific to a knowledge gap."""
         recommendations = []
-        
+
         if gap.category == "business_model":
-            recommendations.extend([
-                "Stripe for payment processing",
-                "Chargebee for subscription management",
-                "Analytics platform (Google Analytics, Mixpanel)",
-            ])
+            recommendations.extend(
+                [
+                    "Stripe for payment processing",
+                    "Chargebee for subscription management",
+                    "Analytics platform (Google Analytics, Mixpanel)",
+                ]
+            )
         elif gap.category == "technical_requirements":
-            recommendations.extend([
-                "Flask/FastAPI for backend development",
-                "PostgreSQL for data persistence",
-                "Redis for caching and sessions",
-                "Docker for containerization",
-            ])
+            recommendations.extend(
+                [
+                    "Flask/FastAPI for backend development",
+                    "PostgreSQL for data persistence",
+                    "Redis for caching and sessions",
+                    "Docker for containerization",
+                ]
+            )
         elif gap.category == "integration":
-            recommendations.extend([
-                "REST API design patterns",
-                "Webhook implementation for real-time updates",
-                "OAuth 2.0 for third-party authentication",
-            ])
+            recommendations.extend(
+                [
+                    "REST API design patterns",
+                    "Webhook implementation for real-time updates",
+                    "OAuth 2.0 for third-party authentication",
+                ]
+            )
         elif gap.category == "validation":
-            recommendations.extend([
-                "pytest for unit testing",
-                "pytest-asyncio for async testing",
-                "Sentry for error monitoring",
-                "Prometheus for metrics",
-            ])
+            recommendations.extend(
+                [
+                    "pytest for unit testing",
+                    "pytest-asyncio for async testing",
+                    "Sentry for error monitoring",
+                    "Prometheus for metrics",
+                ]
+            )
         elif gap.category == "deployment":
-            recommendations.extend([
-                "Docker containerization",
-                "GitHub Actions for CI/CD",
-                "AWS/GCP for cloud hosting",
-                "Kubernetes for orchestration",
-            ])
-        
+            recommendations.extend(
+                [
+                    "Docker containerization",
+                    "GitHub Actions for CI/CD",
+                    "AWS/GCP for cloud hosting",
+                    "Kubernetes for orchestration",
+                ]
+            )
+
         return recommendations[:4]
 
-    def _identify_gap_specific_challenges(self, gap: KnowledgeGap, domain: str) -> List[str]:
+    def _identify_gap_specific_challenges(
+        self, gap: KnowledgeGap, domain: str
+    ) -> List[str]:
         """Identify challenges specific to a knowledge gap."""
         challenges = []
-        
+
         if gap.category == "business_model":
-            challenges.extend([
-                "Pricing optimization and market acceptance",
-                "Customer acquisition cost management",
-                "Revenue stream diversification",
-            ])
+            challenges.extend(
+                [
+                    "Pricing optimization and market acceptance",
+                    "Customer acquisition cost management",
+                    "Revenue stream diversification",
+                ]
+            )
         elif gap.category == "technical_requirements":
-            challenges.extend([
-                "System scalability and performance",
-                "Security and data protection",
-                "Integration complexity management",
-            ])
+            challenges.extend(
+                [
+                    "System scalability and performance",
+                    "Security and data protection",
+                    "Integration complexity management",
+                ]
+            )
         elif gap.category == "user_experience":
-            challenges.extend([
-                "Cross-platform consistency",
-                "Accessibility compliance",
-                "User adoption and retention",
-            ])
+            challenges.extend(
+                [
+                    "Cross-platform consistency",
+                    "Accessibility compliance",
+                    "User adoption and retention",
+                ]
+            )
         elif gap.category == "integration":
-            challenges.extend([
-                "API version management",
-                "Third-party service reliability",
-                "Data synchronization consistency",
-            ])
-        
+            challenges.extend(
+                [
+                    "API version management",
+                    "Third-party service reliability",
+                    "Data synchronization consistency",
+                ]
+            )
+
         return challenges[:3]
 
     def _generate_gap_validation_approaches(self, gap: KnowledgeGap) -> List[str]:
         """Generate validation approaches specific to a gap category."""
         approaches = []
-        
+
         if gap.category == "business_model":
-            approaches.extend([
-                "A/B testing for pricing strategies",
-                "Customer feedback and survey analysis",
-                "Revenue and conversion tracking",
-            ])
+            approaches.extend(
+                [
+                    "A/B testing for pricing strategies",
+                    "Customer feedback and survey analysis",
+                    "Revenue and conversion tracking",
+                ]
+            )
         elif gap.category == "technical_requirements":
-            approaches.extend([
-                "Performance benchmarking and load testing",
-                "Security auditing and penetration testing",
-                "Integration testing with external services",
-            ])
+            approaches.extend(
+                [
+                    "Performance benchmarking and load testing",
+                    "Security auditing and penetration testing",
+                    "Integration testing with external services",
+                ]
+            )
         elif gap.category == "user_experience":
-            approaches.extend([
-                "User acceptance testing (UAT)",
-                "Usability testing and user interviews",
-                "Accessibility compliance testing",
-            ])
-        
+            approaches.extend(
+                [
+                    "User acceptance testing (UAT)",
+                    "Usability testing and user interviews",
+                    "Accessibility compliance testing",
+                ]
+            )
+
         return approaches[:3]
 
     async def _merge_gap_research_contexts(
@@ -1055,7 +1113,7 @@ class ResearchService:
         """Merge multiple gap-specific research contexts into a comprehensive result."""
         if not contexts:
             return None
-        
+
         if len(contexts) == 1:
             return contexts[0]
 
@@ -1066,7 +1124,7 @@ class ResearchService:
         all_technologies = []
         all_validation = []
         all_docs = []
-        
+
         for context in contexts:
             all_patterns.extend(context.technical_patterns)
             all_practices.extend(context.best_practices)
@@ -1100,7 +1158,9 @@ class ResearchService:
 
         return ResearchContext(
             domain_overview=overview,
-            technical_patterns=merged_patterns[:8],  # More patterns from merged research
+            technical_patterns=merged_patterns[
+                :8
+            ],  # More patterns from merged research
             best_practices=merged_practices[:6],
             common_challenges=merged_challenges[:5],
             recommended_technologies=merged_technologies[:6],
@@ -1108,7 +1168,9 @@ class ResearchService:
             official_documentation_links=merged_docs[:8],
             competitor_analysis=[],  # Keep empty for gap-focused research
             research_timestamp=datetime.utcnow(),
-            research_quality_score=min(10.0, avg_quality + 1.0),  # Boost for comprehensive research
+            research_quality_score=min(
+                10.0, avg_quality + 1.0
+            ),  # Boost for comprehensive research
         )
 
     async def enhance_research_with_gaps(
@@ -1142,8 +1204,10 @@ class ResearchService:
         )
 
         # Merge with base research
-        enhanced_research = await self._merge_research_contexts(base_research, gap_research)
-        
+        enhanced_research = await self._merge_research_contexts(
+            base_research, gap_research
+        )
+
         logger.info("Research enhancement completed")
         return enhanced_research
 
@@ -1152,21 +1216,46 @@ class ResearchService:
     ) -> ResearchContext:
         """Merge two research contexts intelligently."""
         # Combine and deduplicate lists
-        merged_patterns = list(set(context1.technical_patterns + context2.technical_patterns))[:8]
-        merged_practices = list(set(context1.best_practices + context2.best_practices))[:6]
-        merged_challenges = list(set(context1.common_challenges + context2.common_challenges))[:5]
-        merged_technologies = list(set(context1.recommended_technologies + context2.recommended_technologies))[:6]
-        merged_validation = list(set(context1.validation_approaches + context2.validation_approaches))[:4]
-        merged_docs = list(set(context1.official_documentation_links + context2.official_documentation_links))[:8]
-        merged_competitors = list(set(context1.competitor_analysis + context2.competitor_analysis))[:4]
+        merged_patterns = list(
+            set(context1.technical_patterns + context2.technical_patterns)
+        )[:8]
+        merged_practices = list(set(context1.best_practices + context2.best_practices))[
+            :6
+        ]
+        merged_challenges = list(
+            set(context1.common_challenges + context2.common_challenges)
+        )[:5]
+        merged_technologies = list(
+            set(context1.recommended_technologies + context2.recommended_technologies)
+        )[:6]
+        merged_validation = list(
+            set(context1.validation_approaches + context2.validation_approaches)
+        )[:4]
+        merged_docs = list(
+            set(
+                context1.official_documentation_links
+                + context2.official_documentation_links
+            )
+        )[:8]
+        merged_competitors = list(
+            set(context1.competitor_analysis + context2.competitor_analysis)
+        )[:4]
 
         # Use the overview from the higher quality research, or combine if similar quality
-        quality_diff = abs(context1.research_quality_score - context2.research_quality_score)
+        quality_diff = abs(
+            context1.research_quality_score - context2.research_quality_score
+        )
         if quality_diff < 1.0:  # Similar quality, combine overviews
-            merged_overview = f"{context1.domain_overview} Enhanced with additional gap analysis: {context2.domain_overview}"[:500]
+            merged_overview = f"{context1.domain_overview} Enhanced with additional gap analysis: {context2.domain_overview}"[
+                :500
+            ]
         else:
             # Use the higher quality overview
-            base_context = context1 if context1.research_quality_score > context2.research_quality_score else context2
+            base_context = (
+                context1
+                if context1.research_quality_score > context2.research_quality_score
+                else context2
+            )
             merged_overview = base_context.domain_overview
 
         return ResearchContext(
@@ -1179,5 +1268,8 @@ class ResearchService:
             official_documentation_links=merged_docs,
             competitor_analysis=merged_competitors,
             research_timestamp=datetime.utcnow(),
-            research_quality_score=max(context1.research_quality_score, context2.research_quality_score) + 0.5,  # Small boost for merged research
+            research_quality_score=max(
+                context1.research_quality_score, context2.research_quality_score
+            )
+            + 0.5,  # Small boost for merged research
         )

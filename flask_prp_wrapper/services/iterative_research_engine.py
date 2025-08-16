@@ -124,7 +124,11 @@ class IterativeResearchEngine:
                 if (
                     iteration_result.research_context
                     and iteration_result.research_context.research_quality_score
-                    > (current_research.research_quality_score if current_research else 0)
+                    > (
+                        current_research.research_quality_score
+                        if current_research
+                        else 0
+                    )
                 ):
                     current_research = iteration_result.research_context
 
@@ -134,7 +138,10 @@ class IterativeResearchEngine:
 
                 # Check stopping criteria
                 should_stop, stop_reason = await self._should_stop_research(
-                    iteration_result.coverage_assessment, criteria, iteration_num, elapsed_time
+                    iteration_result.coverage_assessment,
+                    criteria,
+                    iteration_num,
+                    elapsed_time,
                 )
 
                 if should_stop:
@@ -164,7 +171,8 @@ class IterativeResearchEngine:
         # Determine success
         success = (
             final_metrics.overall_coverage >= criteria.min_overall_coverage
-            and final_metrics.research_quality_score >= criteria.min_research_quality_score
+            and final_metrics.research_quality_score
+            >= criteria.min_research_quality_score
         )
 
         total_time = (datetime.utcnow() - start_time).total_seconds() / 60
@@ -176,21 +184,27 @@ class IterativeResearchEngine:
             total_gaps_identified=sum(
                 len(it.gap_analysis_result.identified_gaps)
                 for it in iterations
-                if hasattr(it, 'gap_analysis_result') and it.gap_analysis_result
+                if hasattr(it, "gap_analysis_result") and it.gap_analysis_result
             ),
             gaps_filled=sum(
                 len([g for g in it.gap_analysis_result.identified_gaps if g.filled])
                 for it in iterations
-                if hasattr(it, 'gap_analysis_result') and it.gap_analysis_result
+                if hasattr(it, "gap_analysis_result") and it.gap_analysis_result
             ),
             total_research_time_minutes=total_time,
             official_sources_used=sum(
-                it.official_sources_found for it in iterations if hasattr(it, 'official_sources_found')
+                it.official_sources_found
+                for it in iterations
+                if hasattr(it, "official_sources_found")
             ),
             questions_generated=sum(
-                len(it.generated_questions) for it in iterations if hasattr(it, 'generated_questions')
+                len(it.generated_questions)
+                for it in iterations
+                if hasattr(it, "generated_questions")
             ),
-            early_stop_reason=stop_reason if len(iterations) < criteria.max_iterations else None,
+            early_stop_reason=stop_reason
+            if len(iterations) < criteria.max_iterations
+            else None,
             success=success,
             ready_for_prp_generation=success and final_metrics.overall_coverage >= 90.0,
         )
@@ -252,14 +266,22 @@ class IterativeResearchEngine:
             # Conduct research if we have a research service
             if area_queries and self.research_service:
                 try:
-                    area_research = await self.research_service.gather_business_domain_context(
-                        domain=concept.domain.value if concept.domain else "general",
-                        business_model=concept.business_model.value if concept.business_model else "general",
-                        concept_description=f"{concept.description} Focus: {area}",
+                    area_research = (
+                        await self.research_service.gather_business_domain_context(
+                            domain=concept.domain.value
+                            if concept.domain
+                            else "general",
+                            business_model=concept.business_model.value
+                            if concept.business_model
+                            else "general",
+                            concept_description=f"{concept.description} Focus: {area}",
+                        )
                     )
-                    
+
                     # Count official sources
-                    official_sources_count += len(area_research.official_documentation_links)
+                    official_sources_count += len(
+                        area_research.official_documentation_links
+                    )
 
                     # Merge with existing research
                     if research_context is None:
@@ -278,7 +300,8 @@ class IterativeResearchEngine:
             try:
                 # Generate questions targeting the highest priority gaps
                 high_priority_gaps = [
-                    g for g in gap_analysis.identified_gaps
+                    g
+                    for g in gap_analysis.identified_gaps
                     if g.priority in ["critical", "high"]
                 ][:5]
 
@@ -304,15 +327,19 @@ class IterativeResearchEngine:
             try:
                 # Create mock SearchResults for quality assessment
                 from ..services.research_service import SearchResult
+
                 mock_results = [
                     SearchResult(
                         title=f"Research for {area}",
                         url=link,
                         snippet=f"Content from {area}",
-                        domain=link.split('//')[1].split('/')[0] if '//' in link else "unknown",
+                        domain=link.split("//")[1].split("/")[0]
+                        if "//" in link
+                        else "unknown",
                         relevance_score=8.0,
                         is_official_docs=any(
-                            domain in link for domain in self.research_service.official_docs_domains
+                            domain in link
+                            for domain in self.research_service.official_docs_domains
                         ),
                         content_type="documentation" if "docs." in link else "webpage",
                     )
@@ -321,8 +348,10 @@ class IterativeResearchEngine:
                 ]
 
                 if mock_results:
-                    quality_assessment = await self.research_quality_assessor.assess_source_quality(
-                        mock_results
+                    quality_assessment = (
+                        await self.research_quality_assessor.assess_source_quality(
+                            mock_results
+                        )
                     )
                     research_quality_score = quality_assessment.overall_quality_score
 
@@ -338,7 +367,9 @@ class IterativeResearchEngine:
         coverage_improvement = 0.0
         if iteration_number > 1:
             # In a real implementation, we'd track previous coverage
-            coverage_improvement = min(5.0, gap_analysis.coverage_percentage / iteration_number)
+            coverage_improvement = min(
+                5.0, gap_analysis.coverage_percentage / iteration_number
+            )
 
         # Create iteration result
         iteration = DetailedResearchIteration(
@@ -350,7 +381,9 @@ class IterativeResearchEngine:
             official_sources_found=official_sources_count,
             questions_generated=len(generated_questions),
             coverage_improvement=coverage_improvement,
-            official_source_ratio=min(1.0, official_sources_count / max(len(research_queries), 1)),
+            official_source_ratio=min(
+                1.0, official_sources_count / max(len(research_queries), 1)
+            ),
             started_at=iteration_start,
             completed_at=datetime.utcnow(),
             status="completed",
@@ -371,18 +404,21 @@ class IterativeResearchEngine:
         return iteration
 
     async def _generate_research_queries_for_area(
-        self, area: str, concept: BusinessConceptRequest, gap_analysis: GapAnalysisResult
+        self,
+        area: str,
+        concept: BusinessConceptRequest,
+        gap_analysis: GapAnalysisResult,
     ) -> List[str]:
         """Generate targeted research queries for a specific area."""
         queries = []
-        
+
         # Base query with official documentation preference
         base_query = f"{area} {concept.domain.value if concept.domain else 'application'} official documentation"
         queries.append(base_query)
 
         # Add specific queries based on area and gaps
         area_gaps = [g for g in gap_analysis.identified_gaps if g.category == area]
-        
+
         for gap in area_gaps[:2]:  # Top 2 gaps per area
             gap_query = f"{area} {gap.description.replace('Missing or insufficient information about:', '').strip()} best practices"
             queries.append(gap_query)
@@ -399,17 +435,36 @@ class IterativeResearchEngine:
     ) -> ResearchContext:
         """Merge two research contexts, preferring higher quality information."""
         # Simple merge - in production this would be more sophisticated
-        merged_patterns = list(set(context1.technical_patterns + context2.technical_patterns))
+        merged_patterns = list(
+            set(context1.technical_patterns + context2.technical_patterns)
+        )
         merged_practices = list(set(context1.best_practices + context2.best_practices))
-        merged_challenges = list(set(context1.common_challenges + context2.common_challenges))
-        merged_technologies = list(set(context1.recommended_technologies + context2.recommended_technologies))
-        merged_validation = list(set(context1.validation_approaches + context2.validation_approaches))
-        merged_docs = list(set(context1.official_documentation_links + context2.official_documentation_links))
-        merged_competitors = list(set(context1.competitor_analysis + context2.competitor_analysis))
+        merged_challenges = list(
+            set(context1.common_challenges + context2.common_challenges)
+        )
+        merged_technologies = list(
+            set(context1.recommended_technologies + context2.recommended_technologies)
+        )
+        merged_validation = list(
+            set(context1.validation_approaches + context2.validation_approaches)
+        )
+        merged_docs = list(
+            set(
+                context1.official_documentation_links
+                + context2.official_documentation_links
+            )
+        )
+        merged_competitors = list(
+            set(context1.competitor_analysis + context2.competitor_analysis)
+        )
 
         # Use the context with higher quality score as base
-        base_context = context1 if context1.research_quality_score >= context2.research_quality_score else context2
-        
+        base_context = (
+            context1
+            if context1.research_quality_score >= context2.research_quality_score
+            else context2
+        )
+
         return ResearchContext(
             domain_overview=base_context.domain_overview,
             technical_patterns=merged_patterns[:5],  # Keep top 5
@@ -420,7 +475,9 @@ class IterativeResearchEngine:
             official_documentation_links=merged_docs[:5],
             competitor_analysis=merged_competitors[:3],
             research_timestamp=datetime.utcnow(),
-            research_quality_score=max(context1.research_quality_score, context2.research_quality_score),
+            research_quality_score=max(
+                context1.research_quality_score, context2.research_quality_score
+            ),
         )
 
     async def _should_stop_research(
@@ -431,7 +488,7 @@ class IterativeResearchEngine:
         elapsed_time_minutes: float,
     ) -> Tuple[bool, str]:
         """Determine if research should stop based on criteria."""
-        
+
         # Check maximum iterations
         if iteration_num >= criteria.max_iterations:
             return True, f"Maximum iterations reached ({criteria.max_iterations})"
@@ -441,18 +498,33 @@ class IterativeResearchEngine:
             return True, f"Time limit reached ({elapsed_time_minutes:.1f} minutes)"
 
         # Check coverage thresholds
-        if coverage_assessment.coverage_metrics.overall_coverage >= criteria.min_overall_coverage:
+        if (
+            coverage_assessment.coverage_metrics.overall_coverage
+            >= criteria.min_overall_coverage
+        ):
             domain_coverage_ok = all(
                 coverage >= criteria.min_domain_coverage
                 for coverage in coverage_assessment.coverage_metrics.domain_coverage.values()
             )
             if domain_coverage_ok:
-                return True, f"Coverage targets met ({coverage_assessment.coverage_metrics.overall_coverage:.1f}%)"
+                return (
+                    True,
+                    f"Coverage targets met ({coverage_assessment.coverage_metrics.overall_coverage:.1f}%)",
+                )
 
         # Check research quality
-        if coverage_assessment.coverage_metrics.research_quality_score >= criteria.min_research_quality_score:
-            if coverage_assessment.coverage_metrics.overall_coverage >= criteria.min_overall_coverage - 5.0:  # Allow 5% tolerance
-                return True, f"Quality and coverage targets met (quality: {coverage_assessment.coverage_metrics.research_quality_score:.1f})"
+        if (
+            coverage_assessment.coverage_metrics.research_quality_score
+            >= criteria.min_research_quality_score
+        ):
+            if (
+                coverage_assessment.coverage_metrics.overall_coverage
+                >= criteria.min_overall_coverage - 5.0
+            ):  # Allow 5% tolerance
+                return (
+                    True,
+                    f"Quality and coverage targets met (quality: {coverage_assessment.coverage_metrics.research_quality_score:.1f})",
+                )
 
         # Continue research
         return False, ""
@@ -465,24 +537,34 @@ class IterativeResearchEngine:
         iterations: List,
     ) -> CoverageMetrics:
         """Calculate final coverage metrics for the research process."""
-        
+
         # Get the latest gap analysis from iterations
         latest_gap_analysis = None
         for iteration in reversed(iterations):
-            if hasattr(iteration, 'gap_analysis_result') and iteration.gap_analysis_result:
+            if (
+                hasattr(iteration, "gap_analysis_result")
+                and iteration.gap_analysis_result
+            ):
                 latest_gap_analysis = iteration.gap_analysis_result
                 break
 
-        overall_coverage = latest_gap_analysis.coverage_percentage if latest_gap_analysis else 0.0
-        domain_completeness = latest_gap_analysis.domain_completeness if latest_gap_analysis else {}
+        overall_coverage = (
+            latest_gap_analysis.coverage_percentage if latest_gap_analysis else 0.0
+        )
+        domain_completeness = (
+            latest_gap_analysis.domain_completeness if latest_gap_analysis else {}
+        )
 
         # Calculate research quality score
-        research_quality = final_research.research_quality_score if final_research else 0.0
+        research_quality = (
+            final_research.research_quality_score if final_research else 0.0
+        )
 
         # Determine if stopping criteria are met
         stopping_criteria_met = (
             overall_coverage >= self.default_stopping_criteria.min_overall_coverage
-            and research_quality >= self.default_stopping_criteria.min_research_quality_score
+            and research_quality
+            >= self.default_stopping_criteria.min_research_quality_score
         )
 
         # Generate recommendations
@@ -498,14 +580,18 @@ class IterativeResearchEngine:
         quality_gates = {
             "coverage_threshold": overall_coverage >= 95.0,
             "quality_threshold": research_quality >= 7.0,
-            "official_sources": final_research and len(final_research.official_documentation_links) >= 3,
-            "technical_patterns": final_research and len(final_research.technical_patterns) >= 3,
+            "official_sources": final_research
+            and len(final_research.official_documentation_links) >= 3,
+            "technical_patterns": final_research
+            and len(final_research.technical_patterns) >= 3,
         }
 
         return CoverageMetrics(
             overall_coverage=overall_coverage,
             domain_coverage=domain_completeness,
-            technical_requirements_coverage=domain_completeness.get("technical_requirements", 0.0),
+            technical_requirements_coverage=domain_completeness.get(
+                "technical_requirements", 0.0
+            ),
             business_model_coverage=domain_completeness.get("business_model", 0.0),
             integration_coverage=domain_completeness.get("integration", 0.0),
             validation_coverage=domain_completeness.get("validation", 0.0),
@@ -516,14 +602,18 @@ class IterativeResearchEngine:
             research_quality_score=research_quality,
         )
 
-    def _convert_to_basic_iteration(self, detailed_iteration: DetailedResearchIteration) -> ResearchIteration:
+    def _convert_to_basic_iteration(
+        self, detailed_iteration: DetailedResearchIteration
+    ) -> ResearchIteration:
         """Convert detailed iteration to basic iteration for final result."""
         return ResearchIteration(
             id=detailed_iteration.id,
             concept_id=detailed_iteration.concept_id,
             iteration_number=detailed_iteration.iteration_number,
             gaps_targeted=detailed_iteration.gaps_targeted,
-            research_queries=detailed_iteration.detailed_research_queries[:5],  # Limit for basic version
+            research_queries=detailed_iteration.detailed_research_queries[
+                :5
+            ],  # Limit for basic version
             official_sources_found=detailed_iteration.official_sources_found,
             questions_generated=detailed_iteration.questions_generated,
             coverage_improvement=detailed_iteration.coverage_improvement,
@@ -536,7 +626,7 @@ class IterativeResearchEngine:
 
     async def get_research_progress(self, concept_id: str) -> Optional[Dict]:
         """Get current research progress for a concept.
-        
+
         This would typically query a database for stored research progress.
         For now, returns a placeholder structure.
         """
@@ -548,20 +638,22 @@ class IterativeResearchEngine:
             "coverage_percentage": 0.0,
             "gaps_identified": 0,
             "gaps_filled": 0,
-            "estimated_completion": "unknown"
+            "estimated_completion": "unknown",
         }
 
     async def resume_research(
-        self, 
-        concept_id: str, 
+        self,
+        concept_id: str,
         last_iteration: int,
-        existing_result: IterativeResearchResult
+        existing_result: IterativeResearchResult,
     ) -> IterativeResearchResult:
         """Resume research from a previous iteration.
-        
+
         This would be used to continue research that was interrupted.
         """
         # In a real implementation, this would load the previous state
         # and continue from where it left off
-        logger.info(f"Resume functionality not fully implemented. Would resume research for {concept_id} from iteration {last_iteration}")
+        logger.info(
+            f"Resume functionality not fully implemented. Would resume research for {concept_id} from iteration {last_iteration}"
+        )
         return existing_result
