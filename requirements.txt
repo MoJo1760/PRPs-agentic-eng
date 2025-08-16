@@ -9,6 +9,11 @@ Flask-Limiter==3.5.0
 pydantic==2.5.2
 pydantic-settings==2.1.0
 
+# File processing and parsing
+python-magic==0.4.27  # For file type detection
+markdown==3.5.2       # For markdown processing (optional, for advanced parsing)
+pathspec==0.11.2      # For file pattern matching
+
 # Development and code quality
 ruff==0.1.8
 mypy==1.7.1
